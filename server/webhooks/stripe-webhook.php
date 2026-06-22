@@ -21,7 +21,7 @@ if (empty($payload) || empty($sig_header)) {
 try {
 
     $stripeService = new StripeService();
-    $webhook_secret = $_ENV['STRIPE_WEBHOOK_SECRET'] ?? 'whsec_f518797ae4b74f69472fd0789aa1a407079557a70e407e5fd9481aa712a3d710';
+    $webhook_secret = $_ENV['STRIPE_WEBHOOK_SECRET'];
 
     $event = \Stripe\Webhook::constructEvent(
         $payload,
