@@ -4,12 +4,9 @@ declare(strict_types=1);
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 $allowed_origins = [
     'http://localhost:3000',
-    'http://localhost:5173',
-    'http://localhost:4173',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:5173',
-    'http://127.0.0.1:4173',
+    'http://localhost:3002',
     'http://dashboard.localhost:3000',
+    'http://dashboard.localhost:3002',
     'https://noon-rime.vercel.app',
     'https://noon-market.vercel.app',
     'https://noon-dashboard.vercel.app'
@@ -42,6 +39,9 @@ if (!file_exists($autoloadPath)) {
 }
 
 require_once $autoloadPath;
+
+$dotenv = Dotenv\Dotenv::createImmutable(__DIR__ . '/../');
+$dotenv->load();
 
 if (file_exists($sessionPath)) {
     require_once $sessionPath;

@@ -18,8 +18,8 @@ class StripeService
     public function __construct()
     {
 
-        $this->stripeSecretKey = getenv('STRIPE_SECRET_KEY') ?? 'sk_test_your_test_key_here';
-        $this->stripePublishableKey = getenv('STRIPE_PUBLISHABLE_KEY') ?? 'pk_test_your_test_key_here';
+        $this->stripeSecretKey = $_ENV['STRIPE_SECRET_KEY'] ?? getenv('STRIPE_SECRET_KEY') ?: 'sk_test_your_test_key_here';
+        $this->stripePublishableKey = $_ENV['STRIPE_PUBLISHABLE_KEY'] ?? getenv('STRIPE_PUBLISHABLE_KEY') ?: 'pk_test_your_test_key_here';
 
 
         \Stripe\Stripe::setApiKey($this->stripeSecretKey);

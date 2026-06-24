@@ -12,12 +12,13 @@ class Database
 
     public function __construct()
     {
-        $this->host = getenv('DB_HOST');
-        $this->username = getenv('DB_USER');
-        $this->password = getenv('DB_PASSWORD');
-        $this->db_name = getenv('DB_NAME');
-        $this->port = getenv('DB_PORT') ?: 3307;
+        $this->host = $_ENV['DB_HOST'] ?? getenv('DB_HOST');
+        $this->username = $_ENV['DB_USER'] ?? getenv('DB_USER');
+        $this->password = $_ENV['DB_PASSWORD'] ?? getenv('DB_PASSWORD');
+        $this->db_name = $_ENV['DB_NAME'] ?? getenv('DB_NAME');
+        $this->port = $_ENV['DB_PORT'] ?? getenv('DB_PORT') ?: 3307;
     }
+
 
     public function getConnection(): mysqli
     {

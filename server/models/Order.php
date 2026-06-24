@@ -64,63 +64,100 @@ class Order
         $this->db->begin_transaction();
 
         try {
-            $orderQuery = "INSERT INTO orders (id, user_id, total_amount, currency, status, shipping_address, payment_method, payment_status) 
+            $stripeSessionId = $data['stripe_session_id'] ?? null;
+
+            if ($stripeSessionId) {
+                $orderQuery = "INSERT INTO orders (id, user_id, total_amount, currency, status, shipping_address, payment_method, payment_status, stripe_session_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            } else {
+                $orderQuery = "INSERT INTO orders (id, user_id, total_amount, currency, status, shipping_address, payment_method, payment_status) 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+            }
 
             $stmt = $this->db->prepare($orderQuery);
+            if (!$stmt) {
+                throw new Exception("Failed to prepare order insert: " . $this->db->error);
+            }
+
             $orderId = generateHash();
             $totalAmount = 0;
+            $orderCurrency = $currency; // preserve before item loop overwrites $currency
 
             foreach ($data['items'] as $item) {
-                $productId = $item['product_id'];
-                $quantity = $item['quantity'];
-                $price = $item['price'];
+                $totalAmount += (float)($item['price']) * (int)($item['quantity']);
+            }
+            $totalAmount = round($totalAmount, 2);
 
-
-                $totalAmount += $price * $quantity;
+            if ($stripeSessionId) {
+                $stmt->bind_param('sidssssss', $orderId, $userId, $totalAmount, $orderCurrency, $status, $shippingAddress, $paymentMethod, $paymentStatus, $stripeSessionId);
+            } else {
+                $stmt->bind_param('sidsssss', $orderId, $userId, $totalAmount, $orderCurrency, $status, $shippingAddress, $paymentMethod, $paymentStatus);
             }
 
-            $stmt->bind_param('ssdsssss', $orderId, $userId, $totalAmount, $currency, $status, $shippingAddress, $paymentMethod, $paymentStatus);
-            $stmt->execute();
-
-            if ($stmt->affected_rows === 0) {
-                throw new Exception("Failed to create order");
+            if (!$stmt->execute()) {
+                throw new Exception("Order insert execute failed: " . $stmt->error);
             }
+
+            if ($stmt->affected_rows < 1) {
+                throw new Exception("Order insert affected 0 rows — possible constraint violation");
+            }
+
 
             $stmt->close();
-
+            error_log("Order row inserted: " . $orderId);
 
             $itemQuery = "INSERT INTO order_items (id, order_id, product_id, quantity, price, currency) VALUES (?, ?, ?, ?, ?, ?)";
             $itemStmt = $this->db->prepare($itemQuery);
+            if (!$itemStmt) {
+                throw new Exception("Failed to prepare order_items insert: " . $this->db->error);
+            }
 
             foreach ($data['items'] as $item) {
-                $itemId = generateHash();
-                $productId = $item['product_id'];
-                $quantity = $item['quantity'];
-                $price = $item['price'];
-                $currency = $item['currency'];
+                $itemId     = generateHash();
+                $productId  = $item['product_id'];
+                $quantity   = (int)$item['quantity'];
+                $price      = (float)$item['price'];
+                $itemCurrency = $item['currency'];
 
-                $itemStmt->bind_param('sssids', $itemId, $orderId, $productId, $quantity, $price, $currency);
-                $itemStmt->execute();
-
-                if ($itemStmt->affected_rows === 0) {
-                    throw new Exception("Failed to create order item for product: " . $productId);
+                // Verify the product exists before inserting to avoid FK violation
+                $checkStmt = $this->db->prepare("SELECT id FROM products WHERE id = ? LIMIT 1");
+                if ($checkStmt) {
+                    $checkStmt->bind_param('s', $productId);
+                    $checkStmt->execute();
+                    $checkResult = $checkStmt->get_result();
+                    $productExists = $checkResult->num_rows > 0;
+                    $checkStmt->close();
+                } else {
+                    $productExists = false;
                 }
+
+                if (!$productExists) {
+                    error_log("Skipping order_item for unknown product_id: " . $productId);
+                    continue;
+                }
+
+                $itemStmt->bind_param('sssids', $itemId, $orderId, $productId, $quantity, $price, $itemCurrency);
+
+                if (!$itemStmt->execute()) {
+                    throw new Exception("order_items insert failed for product {$productId}: " . $itemStmt->error);
+                }
+                error_log("Order item inserted for product: " . $productId);
             }
 
             $itemStmt->close();
 
             $this->db->commit();
+            error_log("Transaction committed for order: " . $orderId);
 
             return [
-                'id' => $orderId,
-                'user_id' => $userId,
-                'total_amount' => $totalAmount,
-                'currency' => $currency,
-                'status' => $status,
-                'payment_status' => $paymentStatus,
+                'id'              => $orderId,
+                'user_id'         => $userId,
+                'total_amount'    => $totalAmount,
+                'currency'        => $orderCurrency,
+                'status'          => $status,
+                'payment_status'  => $paymentStatus,
                 'shipping_address' => $shippingAddress,
-                'payment_method' => $paymentMethod
+                'payment_method'  => $paymentMethod
             ];
 
         } catch (Exception $e) {

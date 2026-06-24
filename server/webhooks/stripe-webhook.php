@@ -21,7 +21,7 @@ if (empty($payload) || empty($sig_header)) {
 try {
 
     $stripeService = new StripeService();
-    $webhook_secret = $_ENV['STRIPE_WEBHOOK_SECRET'];
+    $webhook_secret = $_ENV['STRIPE_WEBHOOK_SECRET'] ?? getenv('STRIPE_WEBHOOK_SECRET');
 
     $event = \Stripe\Webhook::constructEvent(
         $payload,
@@ -47,8 +47,8 @@ try {
                 $cartModel = new Cart($conn);
 
 
-                $userId = $session->metadata['user_id'] ?? null;
-                error_log('User ID from metadata: ' . $userId);
+                $userId = isset($session->metadata['user_id']) ? (int)$session->metadata['user_id'] : null;
+                error_log('User ID from metadata: ' . var_export($userId, true));
 
                 if ($userId) {
 
@@ -56,9 +56,9 @@ try {
                     error_log('Cart items found: ' . count($cartItems));
 
 
-                    if (empty($cartItems) && isset($session->line_items)) {
-                        error_log('Cart is empty, trying to retrieve line items from session');
-                        $stripe = new \Stripe\StripeClient($_ENV['STRIPE_SECRET_KEY'] ?? 'sk_test_your_test_key_here');
+                    if (empty($cartItems)) {
+                        error_log('Cart is empty, retrieving line items from Stripe API');
+                        $stripe = new \Stripe\StripeClient($_ENV['STRIPE_SECRET_KEY'] ?? getenv('STRIPE_SECRET_KEY'));
                         $lineItems = $stripe->checkout->sessions->allLineItems($session->id, ['expand' => ['data.price.product']]);
 
                         $cartItems = [];
@@ -80,7 +80,7 @@ try {
 
                     if (empty($cartItems)) {
                         error_log('Creating virtual Stripe payment product');
-                        $productId = $session->metadata['product_id'];
+                        $productId = $session->metadata['product_id'] ?? generateHash();
 
 
                         $productCheck = $conn->prepare("SELECT id FROM products WHERE id = ?");
@@ -89,15 +89,15 @@ try {
                         $result = $productCheck->get_result();
 
                         if ($result->num_rows === 0) {
-
-                            $createProduct = $conn->prepare("INSERT INTO products (id, name, product_overview, price, currency, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+                            $createProduct = $conn->prepare("INSERT INTO products (id, psku, name, product_overview, price, currency, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
                             $productName = "Stripe Payment";
                             $productOverview = "Payment processed through Stripe";
                             $productPrice = 0.00;
                             $productCurrency = "USD";
                             $adminUserId = 1;
+                            $psku = "ST-" . strtoupper(substr(uniqid(), -6));
 
-                            $createProduct->bind_param("sssdsi", $productId, $productName, $productOverview, $productPrice, $productCurrency, $adminUserId);
+                            $createProduct->bind_param("ssssdsi", $productId, $psku, $productName, $productOverview, $productPrice, $productCurrency, $adminUserId);
                             $createProduct->execute();
                             $createProduct->close();
                             error_log('Virtual Stripe product created');
@@ -171,15 +171,11 @@ try {
                         $trackingModel->create($trackingData);
 
 
-                        $cartQuery = "DELETE FROM cart_items WHERE cart_id IN (SELECT id FROM carts WHERE user_id = ?)";
-                        $stmt = $conn->prepare($cartQuery);
-                        $stmt->bind_param("i", $userId);
-                        $stmt->execute();
-                        $stmt->close();
+                        $cartModel->clearCart((int)$userId);
 
                         error_log("Order processing completed for order: " . $createdOrder['id']);
                     } else {
-                        error_log('Failed to create order');
+                        error_log('Failed to create order. Data passed: ' . json_encode($order));
                     }
                 } else {
                     error_log('No user ID found in session metadata');

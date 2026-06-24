@@ -69,7 +69,7 @@ function getHome(mysqli $db, array $data): array
         $sessionManager = new SessionManager($db);
         $sessionId = $sessionManager->getSessionId();
         $user = $sessionManager->getUser($sessionId);
-        $userId = $user['id'];
+        $userId = $user['id'] ?? null;
         $limit = $data['limit'] ?? 60;
         $offset = $data['offset'] ?? 0;
         $search = $data['search'] ?? '';

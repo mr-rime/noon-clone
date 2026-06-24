@@ -44,4 +44,12 @@ return [
         ],
         'resolve' => requireStoreAuth(fn($root, $args, $context) => updateTrackingDetails($context['db'], $args))
     ],
+
+    'verifyPayment' => [
+        'type' => $OrderResponseType,
+        'args' => [
+            'session_id' => Type::nonNull(Type::string()),
+        ],
+        'resolve' => requireAuth(fn($root, $args, $context) => verifyPayment($context['db'], $args))
+    ],
 ];

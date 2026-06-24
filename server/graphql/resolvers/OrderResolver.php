@@ -3,6 +3,7 @@
 require_once __DIR__ . '/../../models/Order.php';
 require_once __DIR__ . '/../../models/TrackingDetails.php';
 require_once __DIR__ . '/../../services/StripeService.php';
+require_once __DIR__ . '/../../models/Cart.php';
 
 function createOrder(mysqli $db, array $data)
 {
@@ -488,3 +489,146 @@ function updateTrackingDetails(mysqli $db, array $args)
         ];
     }
 }
+
+function verifyPayment(mysqli $db, array $args): array
+{
+    try {
+        $sessionId = $args['session_id'] ?? null;
+        if (!$sessionId) {
+            return ['success' => false, 'message' => 'session_id is required', 'order' => null];
+        }
+
+        $userId = $_SESSION['user']['id'] ?? null;
+        if (!$userId) {
+            return ['success' => false, 'message' => 'User must be logged in', 'order' => null];
+        }
+
+        // Check if we already created an order for this session to prevent duplicates
+        $dupCheck = $db->prepare("SELECT id FROM orders WHERE stripe_session_id = ? LIMIT 1");
+        if ($dupCheck) {
+            $dupCheck->bind_param('s', $sessionId);
+            $dupCheck->execute();
+            $dupResult = $dupCheck->get_result();
+            if ($dupResult->num_rows > 0) {
+                $existingOrder = $dupResult->fetch_assoc();
+                $dupCheck->close();
+                error_log("verifyPayment: order already exists for session {$sessionId}");
+                return ['success' => true, 'message' => 'Order already processed.', 'order' => $existingOrder];
+            }
+            $dupCheck->close();
+        }
+
+        // Verify with Stripe
+        $stripeSecretKey = $_ENV['STRIPE_SECRET_KEY'] ?? getenv('STRIPE_SECRET_KEY');
+        $stripe = new \Stripe\StripeClient($stripeSecretKey);
+
+        $session = $stripe->checkout->sessions->retrieve($sessionId, [
+            'expand' => ['line_items.data.price.product']
+        ]);
+
+        if ($session->payment_status !== 'paid') {
+            return ['success' => false, 'message' => 'Payment not completed. Status: ' . $session->payment_status, 'order' => null];
+        }
+
+        // Build cart items from Stripe line items (source of truth)
+        $cartItems = [];
+        if (!empty($session->line_items->data)) {
+            foreach ($session->line_items->data as $item) {
+                $productId = null;
+                if ($item->price && $item->price->product) {
+                    $productId = $item->price->product->metadata->product_id ?? null;
+                }
+                $cartItems[] = [
+                    'product_id' => $productId,
+                    'name'       => $item->price->product->name ?? 'Product',
+                    'price'      => $item->price->unit_amount / 100,
+                    'currency'   => strtoupper($item->price->currency),
+                    'quantity'   => $item->quantity,
+                    'image_url'  => null,
+                ];
+            }
+        }
+
+        // Fallback: load from DB cart if Stripe line items had no product IDs
+        if (empty(array_filter($cartItems, fn($i) => !empty($i['product_id'])))) {
+            $cartModel = new Cart($db);
+            $dbCartItems = $cartModel->getCartItems((int)$userId);
+            if (!empty($dbCartItems)) {
+                $cartItems = $dbCartItems;
+            }
+        }
+
+        if (empty($cartItems)) {
+            return ['success' => false, 'message' => 'No items found for this session.', 'order' => null];
+        }
+
+        // Build shipping address
+        $shippingAddress = 'Address collected during checkout';
+        if (!empty($session->customer_details->address)) {
+            $addr = $session->customer_details->address;
+            $shippingAddress = json_encode([
+                'line1'       => $addr->line1 ?? '',
+                'line2'       => $addr->line2 ?? '',
+                'city'        => $addr->city ?? '',
+                'state'       => $addr->state ?? '',
+                'postal_code' => $addr->postal_code ?? '',
+                'country'     => $addr->country ?? '',
+                'name'        => $session->customer_details->name ?? '',
+            ]);
+        }
+
+        $orderData = [
+            'currency'         => strtoupper($session->currency),
+            'shipping_address' => $shippingAddress,
+            'payment_method'   => 'stripe',
+            'stripe_session_id' => $sessionId,
+            'items'            => array_map(fn($item) => [
+                'product_id' => $item['product_id'] ?? ($item['id'] ?? null),
+                'name'       => $item['name'],
+                'price'      => $item['final_price'] ?? $item['price'],
+                'currency'   => $item['currency'],
+                'quantity'   => $item['quantity'],
+                'image_url'  => $item['image_url'] ?? null,
+            ], $cartItems),
+        ];
+
+        $orderModel    = new Order($db);
+        $trackingModel = new TrackingDetails($db);
+        $cartModel     = new Cart($db);
+
+        $createdOrder = $orderModel->createFromWebhook($orderData, (int)$userId);
+
+        if (!$createdOrder) {
+            return ['success' => false, 'message' => 'Failed to create order. Please contact support.', 'order' => null];
+        }
+
+        // Mark as paid
+        $orderModel->updateStatus($createdOrder['id'], 'processing', 'paid');
+
+        // Create tracking record
+        $trackingModel->create([
+            'order_id'              => $createdOrder['id'],
+            'shipping_provider'     => 'Standard Shipping',
+            'status'                => 'processing',
+            'estimated_delivery_date' => date('Y-m-d', strtotime('+7 days')),
+        ]);
+
+        // Clear the cart
+        $cartModel->clearCart((int)$userId);
+
+        error_log("verifyPayment: order created {$createdOrder['id']} for user {$userId}");
+
+        return [
+            'success' => true,
+            'message' => 'Payment verified and order created successfully.',
+            'order'   => $createdOrder,
+        ];
+
+    } catch (\Stripe\Exception\ApiErrorException $e) {
+        error_log('verifyPayment Stripe error: ' . $e->getMessage());
+        return ['success' => false, 'message' => 'Stripe error: ' . $e->getMessage(), 'order' => null];
+    } catch (Exception $e) {
+        error_log('verifyPayment error: ' . $e->getMessage());
+        return ['success' => false, 'message' => 'Error: ' . $e->getMessage(), 'order' => null];
+    }
+}
